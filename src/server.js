@@ -161,12 +161,22 @@ const synthesizeSpeech = async (text, voice = OPENAI_TTS_VOICE) => {
   return Buffer.from(audioBuffer).toString('base64');
 };
 
+const parseTargetLanguages = (url) => {
+  // Allow multiple query params (?targetLang=English&targetLang=Spanish) or comma separated (?targetLangs=en,es).
+  const langsFromRepeats = url.searchParams.getAll('targetLang').flatMap((v) => v.split(','));
+  const langsFromList = (url.searchParams.get('targetLangs') || '').split(',');
+  const all = [...langsFromRepeats, ...langsFromList]
+    .map((v) => v.trim())
+    .filter(Boolean);
+  return all.length ? Array.from(new Set(all)) : ['English'];
+};
+
 const handleTranslateRequest = async (req, res) => {
   if (!ensureApiKey(res)) return;
 
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    const targetLanguage = url.searchParams.get('targetLang') || 'English';
+    const targetLanguages = parseTargetLanguages(url);
     const sourceLanguage = url.searchParams.get('sourceLang') || '';
     const outputMode = url.searchParams.get('outputMode') || 'text';
 
@@ -179,17 +189,22 @@ const handleTranslateRequest = async (req, res) => {
     }
 
     const transcript = await transcribeAudio(audioBuffer, sourceLanguage, audioMimeType);
-    const translation = await translateText(transcript, targetLanguage);
+    const wantsAudio = outputMode === 'audio' || outputMode === 'both';
 
-    let audioBase64 = null;
-    if (outputMode === 'audio' || outputMode === 'both') {
-      audioBase64 = await synthesizeSpeech(translation);
-    }
+    const results = await Promise.all(
+      targetLanguages.map(async (language) => {
+        const translation = await translateText(transcript, language);
+        let audioBase64 = null;
+        if (wantsAudio) {
+          audioBase64 = await synthesizeSpeech(translation);
+        }
+        return { language, translation, audioBase64 };
+      })
+    );
 
     respondJson(res, 200, {
       transcript,
-      translation,
-      audioBase64,
+      results,
     });
   } catch (error) {
     console.error(error);

@@ -102,10 +102,10 @@
         <input id="sourceLang" placeholder="auto-detect if empty e.g. en, es, fr" />
       </label>
       <label>
-        Target language
-        <select id="targetLang">
-          <option value="English">English</option>
-          <option value="Spanish">Spanish</option>
+        Target languages (multi-select)
+        <select id="targetLangs" multiple size="6">
+          <option value="English" selected>English</option>
+          <option value="Spanish" selected>Spanish</option>
           <option value="French">French</option>
           <option value="German">German</option>
           <option value="Portuguese">Portuguese</option>
@@ -138,7 +138,7 @@
     const statusEl = document.getElementById('status');
     const logEl = document.getElementById('log');
     const toggleBtn = document.getElementById('toggleBtn');
-    const targetLangEl = document.getElementById('targetLang');
+    const targetLangsEl = document.getElementById('targetLangs');
     const sourceLangEl = document.getElementById('sourceLang');
     const outputModeEl = document.getElementById('outputMode');
     const latencyEl = document.getElementById('latency');
@@ -163,21 +163,27 @@
       return '';
     };
 
-    const appendLog = (transcript, translation, audioBase64) => {
+    const appendLog = (transcript, results) => {
       const container = document.createElement('div');
       container.className = 'log-entry';
       const time = new Date().toLocaleTimeString();
       const transcriptEl = transcript ? `<div><span class="badge">Transcript</span><div>${transcript}</div></div>` : '';
-      const translationEl = translation ? `<div><span class="badge">Translation</span><div>${translation}</div></div>` : '';
-      container.innerHTML = `<div class="status">${time}</div>${transcriptEl}${translationEl}`;
+      container.innerHTML = `<div class="status">${time}</div>${transcriptEl}`;
 
-      if (audioBase64) {
-        const audio = document.createElement('audio');
-        audio.controls = true;
-        audio.src = `data:audio/mpeg;base64,${audioBase64}`;
-        container.appendChild(audio);
-        audio.play().catch(() => {});
-      }
+      (results || []).forEach(({ language, translation, audioBase64 }) => {
+        const block = document.createElement('div');
+        block.innerHTML = `<div><span class="badge">${language}</span><div>${translation || ''}</div></div>`;
+
+        if (audioBase64) {
+          const audio = document.createElement('audio');
+          audio.controls = true;
+          audio.src = `data:audio/mpeg;base64,${audioBase64}`;
+          block.appendChild(audio);
+          audio.play().catch(() => {});
+        }
+
+        container.appendChild(block);
+      });
 
       logEl.prepend(container);
     };
@@ -187,11 +193,12 @@
     };
 
     const sendChunk = async (blob) => {
-      const targetLang = targetLangEl.value;
+      const targetLangs = Array.from(targetLangsEl.selectedOptions).map((o) => o.value);
       const sourceLang = sourceLangEl.value.trim();
       const outputMode = outputModeEl.value;
       const start = performance.now();
-      const params = new URLSearchParams({ targetLang, outputMode });
+      const params = new URLSearchParams({ outputMode });
+      targetLangs.forEach((lang) => params.append('targetLang', lang));
       if (sourceLang) params.set('sourceLang', sourceLang);
 
       const contentType = blob.type || 'application/octet-stream';
@@ -213,7 +220,7 @@
       const json = await resp.json();
       const elapsed = Math.round(performance.now() - start);
       latencyEl.textContent = `Chunk processed in ${elapsed} ms`;
-      appendLog(json.transcript, json.translation, json.audioBase64);
+      appendLog(json.transcript, json.results);
     };
 
     const startChunkRecorder = () => {

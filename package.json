@@ -1,0 +1,11 @@
+{
+  "name": "realtime-translation",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "NODE_ENV=development node src/server.js"
+  },
+  "dependencies": {}
+}

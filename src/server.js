@@ -1,0 +1,213 @@
+import { createServer } from 'http';
+import { readFileSync, existsSync, statSync } from 'fs';
+import { extname, join, resolve } from 'path';
+import { fileURLToPath } from 'url';
+import { Readable } from 'stream';
+import { Buffer } from 'buffer';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = resolve(__filename, '..');
+const projectRoot = resolve(__dirname, '..');
+const publicDir = join(projectRoot, 'public');
+
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const PORT = process.env.PORT || 3000;
+
+const MIME_TYPES = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'application/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.svg': 'image/svg+xml',
+};
+
+const respondJson = (res, status, data) => {
+  res.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Access-Control-Allow-Origin': '*',
+  });
+  res.end(JSON.stringify(data));
+};
+
+const readRequestBody = async (req) => {
+  const chunks = [];
+  for await (const chunk of req) {
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+};
+
+const ensureApiKey = (res) => {
+  if (!OPENAI_API_KEY) {
+    respondJson(res, 500, { error: 'Missing OPENAI_API_KEY' });
+    return false;
+  }
+  return true;
+};
+
+const fetchJson = async (url, options = {}) => {
+  const res = await fetch(url, options);
+  if (!res.ok) {
+    const message = await res.text();
+    throw new Error(`OpenAI request failed (${res.status}): ${message}`);
+  }
+  return res.json();
+};
+
+const fetchArrayBuffer = async (url, options = {}) => {
+  const res = await fetch(url, options);
+  if (!res.ok) {
+    const message = await res.text();
+    throw new Error(`OpenAI request failed (${res.status}): ${message}`);
+  }
+  return res.arrayBuffer();
+};
+
+const transcribeAudio = async (audioBuffer, sourceLanguage) => {
+  const formData = new FormData();
+  const file = new File([audioBuffer], 'audio.webm', { type: 'audio/webm' });
+  formData.set('file', file);
+  formData.set('model', 'whisper-1');
+  if (sourceLanguage) {
+    formData.set('language', sourceLanguage);
+  }
+
+  const result = await fetchJson('https://api.openai.com/v1/audio/transcriptions', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: formData,
+  });
+  return result.text;
+};
+
+const translateText = async (text, targetLanguage) => {
+  const completion = await fetchJson('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'system',
+          content: `You are a translation engine. Translate user text to ${targetLanguage}. Respond with translation only without extra commentary.`,
+        },
+        { role: 'user', content: text },
+      ],
+      temperature: 0.2,
+    }),
+  });
+
+  return completion.choices?.[0]?.message?.content?.trim() || '';
+};
+
+const synthesizeSpeech = async (text, voice = 'alloy') => {
+  const audioBuffer = await fetchArrayBuffer('https://api.openai.com/v1/audio/speech', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini-tts',
+      input: text,
+      voice,
+    }),
+  });
+  return Buffer.from(audioBuffer).toString('base64');
+};
+
+const handleTranslateRequest = async (req, res) => {
+  if (!ensureApiKey(res)) return;
+
+  try {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const targetLanguage = url.searchParams.get('targetLang') || 'English';
+    const sourceLanguage = url.searchParams.get('sourceLang') || '';
+    const outputMode = url.searchParams.get('outputMode') || 'text';
+
+    const audioBuffer = await readRequestBody(req);
+    if (!audioBuffer.length) {
+      respondJson(res, 400, { error: 'No audio content received.' });
+      return;
+    }
+
+    const transcript = await transcribeAudio(audioBuffer, sourceLanguage);
+    const translation = await translateText(transcript, targetLanguage);
+
+    let audioBase64 = null;
+    if (outputMode === 'audio' || outputMode === 'both') {
+      audioBase64 = await synthesizeSpeech(translation);
+    }
+
+    respondJson(res, 200, {
+      transcript,
+      translation,
+      audioBase64,
+    });
+  } catch (error) {
+    console.error(error);
+    respondJson(res, 500, { error: error.message || 'Unexpected server error' });
+  }
+};
+
+const serveStatic = (req, res, filePath) => {
+  if (!existsSync(filePath)) {
+    res.writeHead(404);
+    res.end('Not found');
+    return;
+  }
+
+  const stats = statSync(filePath);
+  if (stats.isDirectory()) {
+    const indexPath = join(filePath, 'index.html');
+    if (!existsSync(indexPath)) {
+      res.writeHead(403);
+      res.end('Forbidden');
+      return;
+    }
+    serveStatic(req, res, indexPath);
+    return;
+  }
+
+  const contentType = MIME_TYPES[extname(filePath)] || 'application/octet-stream';
+  res.writeHead(200, { 'Content-Type': contentType });
+  const stream = Readable.from(readFileSync(filePath));
+  stream.pipe(res);
+};
+
+const server = createServer((req, res) => {
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type',
+    });
+    res.end();
+    return;
+  }
+
+  if (req.method === 'GET' && req.url === '/health') {
+    respondJson(res, 200, { status: 'ok' });
+    return;
+  }
+
+  if (req.method === 'POST' && req.url.startsWith('/api/translate-audio')) {
+    handleTranslateRequest(req, res);
+    return;
+  }
+
+  const requestedPath = req.url.split('?')[0];
+  const filePath = join(publicDir, requestedPath === '/' ? 'index.html' : requestedPath);
+  serveStatic(req, res, filePath);
+});
+
+server.listen(PORT, () => {
+  console.log(`Server listening on http://localhost:${PORT}`);
+});

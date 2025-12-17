@@ -7,5 +7,7 @@
     "start": "node src/server.js",
     "dev": "NODE_ENV=development node src/server.js"
   },
-  "dependencies": {}
+  "dependencies": {
+    "dotenv": "^16.4.5"
+  }
 }

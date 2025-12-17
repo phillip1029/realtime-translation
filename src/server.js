@@ -5,12 +5,20 @@ import { fileURLToPath } from 'url';
 import { Readable } from 'stream';
 import { Buffer } from 'buffer';
 
+import 'dotenv/config';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = resolve(__filename, '..');
 const projectRoot = resolve(__dirname, '..');
 const publicDir = join(projectRoot, 'public');
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const OPENAI_API_BASE_URL = (process.env.OPENAI_API_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
+const OPENAI_TRANSCRIBE_MODEL = process.env.OPENAI_TRANSCRIBE_MODEL || 'whisper-1';
+const OPENAI_TRANSLATE_MODEL = process.env.OPENAI_TRANSLATE_MODEL || 'gpt-4o-mini';
+const OPENAI_TTS_MODEL = process.env.OPENAI_TTS_MODEL || 'gpt-4o-mini-tts';
+const OPENAI_TTS_VOICE = process.env.OPENAI_TTS_VOICE || 'alloy';
+
 const PORT = process.env.PORT || 3000;
 
 const MIME_TYPES = {
@@ -69,12 +77,12 @@ const transcribeAudio = async (audioBuffer, sourceLanguage) => {
   const formData = new FormData();
   const file = new File([audioBuffer], 'audio.webm', { type: 'audio/webm' });
   formData.set('file', file);
-  formData.set('model', 'whisper-1');
+  formData.set('model', OPENAI_TRANSCRIBE_MODEL);
   if (sourceLanguage) {
     formData.set('language', sourceLanguage);
   }
 
-  const result = await fetchJson('https://api.openai.com/v1/audio/transcriptions', {
+  const result = await fetchJson(`${OPENAI_API_BASE_URL}/audio/transcriptions`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${OPENAI_API_KEY}`,
@@ -85,14 +93,14 @@ const transcribeAudio = async (audioBuffer, sourceLanguage) => {
 };
 
 const translateText = async (text, targetLanguage) => {
-  const completion = await fetchJson('https://api.openai.com/v1/chat/completions', {
+  const completion = await fetchJson(`${OPENAI_API_BASE_URL}/chat/completions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${OPENAI_API_KEY}`,
     },
     body: JSON.stringify({
-      model: 'gpt-4o-mini',
+      model: OPENAI_TRANSLATE_MODEL,
       messages: [
         {
           role: 'system',
@@ -107,15 +115,15 @@ const translateText = async (text, targetLanguage) => {
   return completion.choices?.[0]?.message?.content?.trim() || '';
 };
 
-const synthesizeSpeech = async (text, voice = 'alloy') => {
-  const audioBuffer = await fetchArrayBuffer('https://api.openai.com/v1/audio/speech', {
+const synthesizeSpeech = async (text, voice = OPENAI_TTS_VOICE) => {
+  const audioBuffer = await fetchArrayBuffer(`${OPENAI_API_BASE_URL}/audio/speech`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${OPENAI_API_KEY}`,
     },
     body: JSON.stringify({
-      model: 'gpt-4o-mini-tts',
+      model: OPENAI_TTS_MODEL,
       input: text,
       voice,
     }),

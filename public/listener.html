@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Listener | Realtime Translator</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, sans-serif; margin:0; padding:24px; background:#0b1021; color:#f4f4f8; }
+    .card { background: rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.08); border-radius:16px; padding:20px; max-width:720px; margin:auto; box-shadow:0 20px 50px rgba(0,0,0,0.3); }
+    h1 { margin:0 0 8px; letter-spacing:0.02em; }
+    .status { margin-bottom:12px; color:#a6b1d8; }
+    label { display:block; margin-bottom:8px; }
+    select, input, button { font-size:15px; padding:10px 12px; border-radius:10px; border:1px solid rgba(255,255,255,0.2); background:rgba(255,255,255,0.08); color:#f4f4f8; width:100%; }
+    button { cursor:pointer; background:linear-gradient(135deg,#6a9bff,#9c6bff); border:none; color:#0b1021; font-weight:700; transition:transform 0.08s ease, box-shadow 0.2s ease; }
+    button:active { transform:translateY(1px); box-shadow:none; }
+    .grid { display:grid; gap:16px; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); margin-bottom:16px; }
+    .row { display:flex; gap:12px; align-items:center; }
+    .row label { margin:0; }
+    .log { background:rgba(255,255,255,0.04); border-radius:12px; padding:12px 14px; max-height:360px; overflow-y:auto; border:1px solid rgba(255,255,255,0.08); }
+    .log-entry { margin-bottom:12px; }
+    .badge { display:inline-block; padding:2px 8px; border-radius:8px; background:rgba(255,255,255,0.12); color:#c5d7ff; font-size:12px; margin-bottom:4px; }
+    .stack { background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08); border-radius:12px; padding:10px 12px; margin:12px 0; }
+    .stack h3 { margin:0 0 8px; font-size:15px; color:#c5d7ff; }
+    .stack div { max-height:160px; min-height:48px; padding:6px 4px; overflow-y:auto; white-space:pre-wrap; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Realtime Audio Translator · Listener</h1>
+    <p class="status" id="status">Not listening</p>
+
+    <div class="grid">
+      <label>
+        Listen room / session ID
+        <input id="listenRoom" placeholder="default" value="default" />
+      </label>
+      <label>
+        Passcode
+        <input id="listenPasscode" placeholder="room passcode" />
+      </label>
+      <label>
+        Language channel
+        <select id="listenLang">
+          <option value="English">English</option>
+          <option value="Spanish">Spanish</option>
+          <option value="French">French</option>
+          <option value="German">German</option>
+          <option value="Portuguese">Portuguese</option>
+          <option value="Japanese">Japanese</option>
+          <option value="Korean">Korean</option>
+          <option value="Arabic">Arabic</option>
+          <option value="Hindi">Hindi</option>
+          <option value="Mandarin Chinese">Mandarin Chinese</option>
+          <option value="Cantonese">Cantonese</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="row" style="margin-bottom:12px;">
+      <button id="listenBtn" style="width:200px;">Subscribe to channel</button>
+      <span id="listenStatus" class="status">Not connected</span>
+    </div>
+
+    <div class="stack">
+      <h3>Live transcript</h3>
+      <div id="liveTranscript" aria-live="polite"></div>
+    </div>
+    <div class="stack">
+      <h3>Live translation (selected language)</h3>
+      <div id="liveTranslation" aria-live="polite"></div>
+    </div>
+    <div class="stack">
+      <h3>Continuous audio stream</h3>
+      <audio id="streamAudio" controls style="width:100%;"></audio>
+      <div id="queueStatus" class="status" style="margin-top:6px;">Queue: empty</div>
+      <div class="row" style="margin-top:8px; flex-wrap:wrap;">
+        <button id="downloadAudio" style="flex:1;">Download audio</button>
+        <button id="downloadTranscript" style="flex:1;">Download transcript</button>
+        <button id="downloadTranslation" style="flex:1;">Download translation</button>
+      </div>
+    </div>
+
+    <div class="log" id="log" style="display:none;"></div>
+  </div>
+
+  <script>
+    const listenRoomEl = document.getElementById('listenRoom');
+    const listenPasscodeEl = document.getElementById('listenPasscode');
+    const listenLangEl = document.getElementById('listenLang');
+    const listenBtn = document.getElementById('listenBtn');
+    const listenStatusEl = document.getElementById('listenStatus');
+    const statusEl = document.getElementById('status');
+    const logEl = document.getElementById('log');
+    const liveTranscriptEl = document.getElementById('liveTranscript');
+    const liveTranslationEl = document.getElementById('liveTranslation');
+    const streamAudioEl = document.getElementById('streamAudio');
+    const queueStatusEl = document.getElementById('queueStatus');
+    const downloadAudioBtn = document.getElementById('downloadAudio');
+    const downloadTranscriptBtn = document.getElementById('downloadTranscript');
+    const downloadTranslationBtn = document.getElementById('downloadTranslation');
+
+    const channelName = (room, language) => `${room || 'default'}:${(language || '').toLowerCase()}`;
+
+    // Removed chunk log rendering for clean UI
+
+    // ---- Continuous text accumulation ----
+    const liveState = { transcript: '', translation: '' };
+    let transcriptParts = [];
+    let translationParts = [];
+    let audioChunks = [];
+    const updateLiveText = () => {
+      liveTranscriptEl.textContent = liveState.transcript.trim();
+      liveTranslationEl.textContent = liveState.translation.trim();
+      liveTranscriptEl.scrollTop = liveTranscriptEl.scrollHeight;
+      liveTranslationEl.scrollTop = liveTranslationEl.scrollHeight;
+    };
+
+    // ---- Audio queue (no overlap) ----
+    let playbackQueue = [];
+    let currentUrl = null;
+
+    const updateQueueStatus = () => {
+      queueStatusEl.textContent = `Queue: ${playbackQueue.length}${streamAudioEl.paused ? ' (paused)' : ' (playing)'}`;
+    };
+
+    const revokeCurrent = () => {
+      if (currentUrl) {
+        URL.revokeObjectURL(currentUrl);
+        currentUrl = null;
+      }
+    };
+
+    const playNext = () => {
+      revokeCurrent();
+      const next = playbackQueue.shift();
+      if (!next) {
+        streamAudioEl.removeAttribute('src');
+        streamAudioEl.load();
+        updateQueueStatus();
+        return;
+      }
+      currentUrl = next;
+      streamAudioEl.src = next;
+      streamAudioEl.play().catch(() => {});
+      updateQueueStatus();
+    };
+
+    streamAudioEl.addEventListener('ended', playNext);
+
+    const enqueueAudio = (base64) => {
+      if (!base64) return;
+      const binary = atob(base64);
+      const len = binary.length;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
+      const blob = new Blob([bytes], { type: 'audio/mpeg' });
+      audioChunks.push(blob);
+      const url = URL.createObjectURL(blob);
+      playbackQueue.push(url);
+      if (streamAudioEl.paused && playbackQueue.length === 1) {
+        playNext();
+      } else {
+        updateQueueStatus();
+      }
+    };
+
+    const resetStream = () => {
+      playbackQueue.forEach((u) => URL.revokeObjectURL(u));
+      playbackQueue = [];
+      revokeCurrent();
+      streamAudioEl.pause();
+      streamAudioEl.removeAttribute('src');
+      streamAudioEl.load();
+      updateQueueStatus();
+      audioChunks = [];
+    };
+
+    let eventSource = null;
+    const subscribeToChannel = () => {
+      const room = listenRoomEl.value.trim() || 'default';
+      const lang = listenLangEl.value;
+      const passcode = listenPasscodeEl.value.trim();
+      const channel = channelName(room, lang);
+
+      if (eventSource) {
+        eventSource.close();
+        eventSource = null;
+      }
+      resetStream();
+      liveState.transcript = '';
+      liveState.translation = '';
+      transcriptParts = [];
+      translationParts = [];
+      updateLiveText();
+
+      listenStatusEl.textContent = `Connecting to ${channel}…`;
+      statusEl.textContent = `Connecting…`;
+      const qs = new URLSearchParams({ channel, room, passcode });
+      eventSource = new EventSource(`/api/subscribe?${qs.toString()}`);
+
+      eventSource.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          if (payload.type === 'ready') {
+            listenStatusEl.textContent = `Listening on ${channel}`;
+            statusEl.textContent = `Listening`;
+            return;
+          }
+          if (payload.type === 'translation') {
+            if (payload.transcript) {
+              liveState.transcript += (liveState.transcript ? '\n' : '') + payload.transcript;
+              transcriptParts.push(payload.transcript);
+            }
+            if (payload.translation) {
+              liveState.translation += (liveState.translation ? '\n' : '') + payload.translation;
+              translationParts.push(payload.translation);
+            }
+            updateLiveText();
+            enqueueAudio(payload.audioBase64);
+          }
+        } catch (err) {
+          console.error('SSE parse error', err);
+        }
+      };
+
+      eventSource.onerror = () => {
+        listenStatusEl.textContent = `Error or disconnected from ${channel}`;
+        statusEl.textContent = 'Not listening';
+      };
+    };
+
+    listenBtn.addEventListener('click', () => {
+      subscribeToChannel();
+    });
+
+    const triggerDownload = (blob, filename) => {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    };
+
+    downloadAudioBtn.addEventListener('click', () => {
+      if (!audioChunks.length) return alert('No audio captured yet.');
+      const merged = new Blob(audioChunks, { type: 'audio/mpeg' });
+      const room = (listenRoomEl.value.trim() || 'room').replace(/\s+/g, '_');
+      const lang = (listenLangEl.value || 'lang').replace(/\\s+/g, '_');
+      triggerDownload(merged, `${room}-${lang}-audio.mp3`);
+    });
+
+    downloadTranscriptBtn.addEventListener('click', () => {
+      if (!transcriptParts.length) return alert('No transcript yet.');
+      const text = transcriptParts.join('\n');
+      const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+      const room = (listenRoomEl.value.trim() || 'room').replace(/\s+/g, '_');
+      triggerDownload(blob, `${room}-transcript.txt`);
+    });
+
+    downloadTranslationBtn.addEventListener('click', () => {
+      if (!translationParts.length) return alert('No translation yet.');
+      const text = translationParts.join('\n');
+      const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+      const room = (listenRoomEl.value.trim() || 'room').replace(/\s+/g, '_');
+      const lang = (listenLangEl.value || 'lang').replace(/\s+/g, '_');
+      triggerDownload(blob, `${room}-${lang}-translation.txt`);
+    });
+  </script>
+</body>
+</html>

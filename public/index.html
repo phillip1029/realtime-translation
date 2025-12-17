@@ -144,8 +144,24 @@
     const latencyEl = document.getElementById('latency');
 
     let mediaRecorder = null;
+    let audioStream = null;
+    let chunkTimer = null;
+    const chunkMs = 3000;
     let isRecording = false;
     let queue = Promise.resolve();
+
+    const pickMimeType = () => {
+      const candidates = [
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/ogg;codecs=opus',
+        'audio/ogg',
+      ];
+      for (const type of candidates) {
+        if (window.MediaRecorder && MediaRecorder.isTypeSupported(type)) return type;
+      }
+      return '';
+    };
 
     const appendLog = (transcript, translation, audioBase64) => {
       const container = document.createElement('div');
@@ -178,10 +194,13 @@
       const params = new URLSearchParams({ targetLang, outputMode });
       if (sourceLang) params.set('sourceLang', sourceLang);
 
+      const contentType = blob.type || 'application/octet-stream';
+
       const resp = await fetch(`/api/translate-audio?${params.toString()}`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/octet-stream',
+          'Content-Type': contentType,
+          'X-Audio-Mime-Type': contentType,
         },
         body: blob,
       });
@@ -197,16 +216,14 @@
       appendLog(json.transcript, json.translation, json.audioBase64);
     };
 
-    const startRecording = async () => {
-      // Always reset the queue for a fresh session so previous failures do not block new chunks.
-      queue = Promise.resolve();
+    const startChunkRecorder = () => {
+      if (!audioStream) return;
 
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      const mimeType = pickMimeType();
+      mediaRecorder = mimeType ? new MediaRecorder(audioStream, { mimeType }) : new MediaRecorder(audioStream);
 
       mediaRecorder.ondataavailable = (e) => {
-        if (!e.data.size) return;
-        // Process sequentially to avoid overlapping requests.
+        if (!e.data || !e.data.size) return;
         queue = queue
           .then(() => sendChunk(e.data))
           .catch((err) => {
@@ -216,8 +233,23 @@
       };
 
       mediaRecorder.onstop = () => {
-        stream.getTracks().forEach((t) => t.stop());
-        // Ensure any queued chunk finishes before showing the idle state.
+        if (chunkTimer) {
+          clearTimeout(chunkTimer);
+          chunkTimer = null;
+        }
+
+        if (isRecording) {
+          // Start a fresh recorder to produce a self-contained file blob each chunk.
+          startChunkRecorder();
+          return;
+        }
+
+        // Final stop: release the mic stream.
+        if (audioStream) {
+          audioStream.getTracks().forEach((t) => t.stop());
+          audioStream = null;
+        }
+
         queue
           .catch(() => {})
           .finally(() => {
@@ -225,19 +257,39 @@
           });
       };
 
-      mediaRecorder.start(3000);
+      mediaRecorder.start();
+      chunkTimer = setTimeout(() => {
+        if (mediaRecorder && mediaRecorder.state === 'recording') {
+          mediaRecorder.stop();
+        }
+      }, chunkMs);
+    };
+
+    const startRecording = async () => {
+      queue = Promise.resolve();
+      latencyEl.textContent = 'Waiting for audio…';
+
+      audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       isRecording = true;
       toggleBtn.textContent = 'Stop capturing';
       updateStatus('Capturing microphone…');
+      startChunkRecorder();
     };
 
     const stopRecording = () => {
-      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+      isRecording = false;
+
+      if (chunkTimer) {
+        clearTimeout(chunkTimer);
+        chunkTimer = null;
+      }
+
+      if (mediaRecorder && mediaRecorder.state === 'recording') {
         mediaRecorder.stop();
       }
-      isRecording = false;
+
       toggleBtn.textContent = 'Start capturing';
-      updateStatus('Idle');
+      updateStatus('Stopping…');
     };
 
     toggleBtn.addEventListener('click', async () => {

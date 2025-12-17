@@ -73,9 +73,39 @@ const fetchArrayBuffer = async (url, options = {}) => {
   return res.arrayBuffer();
 };
 
-const transcribeAudio = async (audioBuffer, sourceLanguage) => {
+const normalizeMimeType = (value) => {
+  if (!value) return '';
+  return String(value).split(';')[0].trim().toLowerCase();
+};
+
+const extensionForAudioMimeType = (mimeType) => {
+  switch (mimeType) {
+    case 'audio/webm':
+      return 'webm';
+    case 'audio/ogg':
+    case 'audio/oga':
+      return 'ogg';
+    case 'audio/wav':
+    case 'audio/x-wav':
+      return 'wav';
+    case 'audio/mpeg':
+    case 'audio/mp3':
+      return 'mp3';
+    case 'audio/mp4':
+    case 'audio/m4a':
+      return 'mp4';
+    case 'audio/flac':
+      return 'flac';
+    default:
+      return 'webm';
+  }
+};
+
+const transcribeAudio = async (audioBuffer, sourceLanguage, audioMimeType) => {
   const formData = new FormData();
-  const file = new File([audioBuffer], 'audio.webm', { type: 'audio/webm' });
+  const normalizedMimeType = normalizeMimeType(audioMimeType) || 'audio/webm';
+  const extension = extensionForAudioMimeType(normalizedMimeType);
+  const file = new File([audioBuffer], `audio.${extension}`, { type: normalizedMimeType });
   formData.set('file', file);
   formData.set('model', OPENAI_TRANSCRIBE_MODEL);
   if (sourceLanguage) {
@@ -140,13 +170,15 @@ const handleTranslateRequest = async (req, res) => {
     const sourceLanguage = url.searchParams.get('sourceLang') || '';
     const outputMode = url.searchParams.get('outputMode') || 'text';
 
+    const audioMimeType = normalizeMimeType(req.headers['x-audio-mime-type'] || req.headers['content-type']);
+
     const audioBuffer = await readRequestBody(req);
     if (!audioBuffer.length) {
       respondJson(res, 400, { error: 'No audio content received.' });
       return;
     }
 
-    const transcript = await transcribeAudio(audioBuffer, sourceLanguage);
+    const transcript = await transcribeAudio(audioBuffer, sourceLanguage, audioMimeType);
     const translation = await translateText(transcript, targetLanguage);
 
     let audioBase64 = null;
@@ -195,7 +227,7 @@ const server = createServer((req, res) => {
     res.writeHead(204, {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Headers': 'Content-Type, X-Audio-Mime-Type',
     });
     res.end();
     return;

@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Realtime Translator</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, Segoe UI, sans-serif;
+      margin: 0;
+      padding: 24px;
+      background: #0b1021;
+      color: #f4f4f8;
+    }
+    .card {
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 16px;
+      padding: 20px;
+      max-width: 960px;
+      margin: auto;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3);
+    }
+    h1 {
+      margin-top: 0;
+      letter-spacing: 0.02em;
+    }
+    label {
+      display: block;
+      margin-bottom: 8px;
+    }
+    select, input, button {
+      font-size: 15px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      background: rgba(255, 255, 255, 0.08);
+      color: #f4f4f8;
+      width: 100%;
+    }
+    button {
+      cursor: pointer;
+      background: linear-gradient(135deg, #6a9bff, #9c6bff);
+      border: none;
+      color: #0b1021;
+      font-weight: 700;
+      transition: transform 0.08s ease, box-shadow 0.2s ease;
+    }
+    button:active {
+      transform: translateY(1px);
+      box-shadow: none;
+    }
+    .grid {
+      display: grid;
+      gap: 16px;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      margin-bottom: 16px;
+    }
+    .log {
+      background: rgba(255, 255, 255, 0.04);
+      border-radius: 12px;
+      padding: 12px 14px;
+      max-height: 260px;
+      overflow-y: auto;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .log-entry {
+      margin-bottom: 12px;
+    }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.12);
+      color: #c5d7ff;
+      font-size: 12px;
+      margin-bottom: 4px;
+    }
+    .status {
+      margin-bottom: 8px;
+      color: #a6b1d8;
+    }
+    audio {
+      width: 100%;
+      margin-top: 8px;
+    }
+    .row {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+    .row label { margin: 0; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Realtime Audio Translator</h1>
+    <p class="status" id="status">Idle</p>
+    <div class="grid">
+      <label>
+        Source language (hint for Whisper)
+        <input id="sourceLang" placeholder="auto-detect if empty e.g. en, es, fr" />
+      </label>
+      <label>
+        Target language
+        <select id="targetLang">
+          <option value="English">English</option>
+          <option value="Spanish">Spanish</option>
+          <option value="French">French</option>
+          <option value="German">German</option>
+          <option value="Portuguese">Portuguese</option>
+          <option value="Japanese">Japanese</option>
+          <option value="Korean">Korean</option>
+          <option value="Arabic">Arabic</option>
+          <option value="Hindi">Hindi</option>
+          <option value="Chinese">Chinese</option>
+        </select>
+      </label>
+      <label>
+        Output mode
+        <select id="outputMode">
+          <option value="text">Text only</option>
+          <option value="audio">Audio only</option>
+          <option value="both">Text + Audio</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="row" style="margin-bottom:12px;">
+      <button id="toggleBtn" style="width:200px;">Start capturing</button>
+      <span id="latency" class="status">Waiting for audio…</span>
+    </div>
+
+    <div class="log" id="log"></div>
+  </div>
+
+  <script>
+    const statusEl = document.getElementById('status');
+    const logEl = document.getElementById('log');
+    const toggleBtn = document.getElementById('toggleBtn');
+    const targetLangEl = document.getElementById('targetLang');
+    const sourceLangEl = document.getElementById('sourceLang');
+    const outputModeEl = document.getElementById('outputMode');
+    const latencyEl = document.getElementById('latency');
+
+    let mediaRecorder = null;
+    let isRecording = false;
+    let queue = Promise.resolve();
+
+    const appendLog = (transcript, translation, audioBase64) => {
+      const container = document.createElement('div');
+      container.className = 'log-entry';
+      const time = new Date().toLocaleTimeString();
+      const transcriptEl = transcript ? `<div><span class="badge">Transcript</span><div>${transcript}</div></div>` : '';
+      const translationEl = translation ? `<div><span class="badge">Translation</span><div>${translation}</div></div>` : '';
+      container.innerHTML = `<div class="status">${time}</div>${transcriptEl}${translationEl}`;
+
+      if (audioBase64) {
+        const audio = document.createElement('audio');
+        audio.controls = true;
+        audio.src = `data:audio/mpeg;base64,${audioBase64}`;
+        container.appendChild(audio);
+        audio.play().catch(() => {});
+      }
+
+      logEl.prepend(container);
+    };
+
+    const updateStatus = (text) => {
+      statusEl.textContent = text;
+    };
+
+    const sendChunk = async (blob) => {
+      const targetLang = targetLangEl.value;
+      const sourceLang = sourceLangEl.value.trim();
+      const outputMode = outputModeEl.value;
+      const start = performance.now();
+      const params = new URLSearchParams({ targetLang, outputMode });
+      if (sourceLang) params.set('sourceLang', sourceLang);
+
+      const resp = await fetch(`/api/translate-audio?${params.toString()}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/octet-stream',
+        },
+        body: blob,
+      });
+
+      if (!resp.ok) {
+        const err = await resp.text();
+        throw new Error(err || 'Translation failed');
+      }
+
+      const json = await resp.json();
+      const elapsed = Math.round(performance.now() - start);
+      latencyEl.textContent = `Chunk processed in ${elapsed} ms`;
+      appendLog(json.transcript, json.translation, json.audioBase64);
+    };
+
+    const startRecording = async () => {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (!e.data.size) return;
+        // Process sequentially to avoid overlapping requests.
+        queue = queue.then(() => sendChunk(e.data)).catch((err) => {
+          console.error(err);
+          updateStatus('Error sending audio chunk. Check console.');
+        });
+      };
+
+      mediaRecorder.onstop = () => {
+        stream.getTracks().forEach((t) => t.stop());
+        updateStatus('Stopped');
+      };
+
+      mediaRecorder.start(3000);
+      isRecording = true;
+      toggleBtn.textContent = 'Stop capturing';
+      updateStatus('Capturing microphone…');
+    };
+
+    const stopRecording = () => {
+      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        mediaRecorder.stop();
+      }
+      isRecording = false;
+      toggleBtn.textContent = 'Start capturing';
+      updateStatus('Idle');
+    };
+
+    toggleBtn.addEventListener('click', async () => {
+      if (isRecording) return stopRecording();
+      try {
+        await startRecording();
+      } catch (error) {
+        console.error(error);
+        updateStatus('Microphone permission denied or not available.');
+      }
+    });
+  </script>
+</body>
+</html>

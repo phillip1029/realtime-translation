@@ -198,21 +198,31 @@
     };
 
     const startRecording = async () => {
+      // Always reset the queue for a fresh session so previous failures do not block new chunks.
+      queue = Promise.resolve();
+
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
 
       mediaRecorder.ondataavailable = (e) => {
         if (!e.data.size) return;
         // Process sequentially to avoid overlapping requests.
-        queue = queue.then(() => sendChunk(e.data)).catch((err) => {
-          console.error(err);
-          updateStatus('Error sending audio chunk. Check console.');
-        });
+        queue = queue
+          .then(() => sendChunk(e.data))
+          .catch((err) => {
+            console.error(err);
+            updateStatus('Error sending audio chunk. Check console.');
+          });
       };
 
       mediaRecorder.onstop = () => {
         stream.getTracks().forEach((t) => t.stop());
-        updateStatus('Stopped');
+        // Ensure any queued chunk finishes before showing the idle state.
+        queue
+          .catch(() => {})
+          .finally(() => {
+            updateStatus('Stopped');
+          });
       };
 
       mediaRecorder.start(3000);
